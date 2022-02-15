@@ -15,7 +15,8 @@
 # SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 FROM ubuntu:20.04
-ENV TZ=<your timezone, e.g. America/Los_Angeles>
+# ENV TZ=<your timezone, e.g. America/Los_Angeles>
+ENV TZ=America/Los_Angeles
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
 RUN apt-get -y update && apt-get install -y \
@@ -33,6 +34,9 @@ RUN apt-get -y update && apt-get install -y \
 	gstreamer1.0-gtk3 \
 	gstreamer1.0-qt5 \
 	gstreamer1.0-pulseaudio \
+	v4l-utils \
+	ffmpeg \
+	usbutils \
 	&& apt-get clean && apt-get autoremove && rm -rf /var/lib/apt/lists/*
 
 ENTRYPOINT ["gst-inspect-1.0"] 

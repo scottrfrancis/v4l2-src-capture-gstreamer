@@ -1,6 +1,12 @@
-# AWS IoT Greengrass V2 Component using Docker to run GStreamer to grab frames from an RTSP Stream
+# Docker container to capture video from a V4L2 src with multiple sink options
 
-Using this project you can setup a docker container that will pull the latest frame from an RTSP source using GStreamer and controlled by AWS IoT Greengrass V2.
+
+Using this project you can setup a docker container that will pull the latest frame from a USB HDMI capture card (or other v4l2 compatible source) and send the content to a variety of sinks using GStreamer. Sinks include:
+
+* Files -- useful for both capture and debugging
+* [TDOD] RTSP (as a server)
+* [TODO] KVS Streams (for HLS or DASH viewing)
+* [TODO] KVS WebRTC (for remote viewing AND control/text/log channel)
 
 This project targets Linux hosts and was developed using Linux and Mac desktop environments. 
 
@@ -19,6 +25,9 @@ uname -a
 # x86 Mac
 #Darwin 3c22fbe3d4e9.ant.amazon.com 20.6.0 Darwin Kernel Version 20.6.0: Mon Aug 30 06:12:21 PDT 2021; root:xnu-7195.141.6~3/RELEASE_X86_64 x86_64
 
+# M1 Mac
+#Darwin M0VFC2F9KW 21.3.0 Darwin Kernel Version 21.3.0: Wed Jan  5 21:37:58 PST 2022; root:xnu-8019.80.24~20/RELEASE_ARM64_T6000 arm64
+
 # i7 Ubuntu
 #Linux dev 5.11.0-37-generic #41~20.04.2-Ubuntu SMP Fri Sep 24 09:06:38 UTC 2021 x86_64 x86_64 x86_64 GNU/Linux
 
@@ -35,19 +44,175 @@ uname -m
 
 Before proceeding, inspect and verify the Dockerfile contents and filename to agree with the commands in this document.
 
-## Part 1 - RTSP Stream to Still in a Docker Container
+## Verify V4L2 device functionality
 
-Using Computer Vision models often means acquiring images from RTSP sources. GStreamer provides a flexible and effective means to acquire those sources and render the current frame. As [GStreamer](https://gstreamer.freedesktop.org/) can require a number of libraries and be a bit tricky to work with, using Docker helps to manage these dependencies.
+GStreamer should be able to support nearly any V4L2 compatible device. This project was developed using a [QGeeM HDMI Capture Card](https://www.qgeem.com/products/qgeem-hdmi-game-live-video-capture-device), which is a USB 3.0 device. However, there are many devices that should work. A comprehensive list is beyond the scope of this project. Instead, this section can be used to verify the device functionality on the host prior to using the container.
 
-_Note:_ This section will build a Docker image and wrap it in a Greengrass V2 component. Docker images are specific to the OS and instruction architecture of the host. It can be convenient to build the image on one machine and deploy it to multiple others. However, the OS and architecture needs to be consistent. To avoid any issues, these instructions will build the image on the same system as the target for deployment. Advanced users can adapt this sequence to their needs.
+### 1. Verify capture device connection
+
+As noted above, this guide uses a USB capture device. If you are using another style of connection, verify that the device is installed and accessible. These steps explore the detailed device files. However, functionality can also be quickly verified using an application like [OBS](https://obsproject.com/).
+
+**Find USB Connection**
+
+```bash
+lsusb -t
+# /:  Bus 04.Port 1: Dev 1, Class=root_hub, Driver=xhci_hcd/2p, 10000M
+# /:  Bus 03.Port 1: Dev 1, Class=root_hub, Driver=xhci_hcd/2p, 480M
+# /:  Bus 02.Port 1: Dev 1, Class=root_hub, Driver=xhci_hcd/6p, 10000M
+#     |__ Port 4: Dev 6, If 0, Class=Hub, Driver=hub/4p, 5000M
+#         |__ Port 1: Dev 7, If 0, Class=Mass Storage, Driver=usb-storage, 5000M
+#         |__ Port 2: Dev 8, If 0, Class=Video, Driver=uvcvideo, 5000M
+#         |__ Port 2: Dev 8, If 1, Class=Video, Driver=uvcvideo, 5000M
+#         |__ Port 2: Dev 8, If 2, Class=Audio, Driver=snd-usb-audio, 5000M
+#         |__ Port 2: Dev 8, If 3, Class=Audio, Driver=snd-usb-audio, 5000M
+# /:  Bus 01.Port 1: Dev 1, Class=root_hub, Driver=xhci_hcd/12p, 480M
+#     |__ Port 4: Dev 10, If 0, Class=Hub, Driver=hub/4p, 480M
+#     |__ Port 10: Dev 3, If 0, Class=Wireless, Driver=btusb, 12M
+#     |__ Port 10: Dev 3, If 1, Class=Wireless, Driver=btusb, 12M
+```
+
+In this case, the capture device shows up with `Class=Video`. Also note that there are also audio `Class=Audio` devices on the same USB port (`Port 2: Dev 8`).
+
+**Check the V4L2 device mapping**
+
+```bash
+ls -l /dev/v4l/by-path
+# lrwxrwxrwx 1 root root 12 Feb 11 10:39 pci-0000:00:14.0-usb-0:4.2:1.0-video-index0 -> ../../video0
+# lrwxrwxrwx 1 root root 12 Feb 11 10:39 pci-0000:00:14.0-usb-0:4.2:1.0-video-index1 -> ../../video1
+```
+
+Note the USB port (`Port 2: Dev 8`) is listed as `-usb-0:4.2:1.0-` where `4:2` indicates `Bus 02` on `Port 4`. The symlink indicates that this dvice is then mounted on `/dev/video0` and `/dev/video1`. Verify those devices with:
+
+```bash
+ls -l /dev/video*
+# crw-rw----+ 1 root video 81, 0 Feb 11 10:39 /dev/video0
+# crw-rw----+ 1 root video 81, 1 Feb 11 10:39 /dev/video1
+```
+
+### 2. Verify V4L2 device function
+
+If necessary, install the `v4l-utils` package (it is not usually installed by default).
+
+```
+sudo apt install v4l-utils
+```
+
+**Check the device matches**
+
+```bash
+v4l2-ctl --list-devices
+# Video Capture 2 (usb-0000:00:14.0-4.2):
+#         /dev/video0
+#         /dev/video1
+```
+
+Usually you will only need to deal with the `0` device. The second device provides metadata about the video data from the first device. The new devices were introduced by this patch:
+
+https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=088ead25524583e2200aa99111bea2f66a86545a
+
+More information on the V4L metadata interface can be found here:
+
+https://linuxtv.org/downloads/v4l-dvb-apis/uapi/v4l/dev-meta.html
+
+For run of the mill USB Video Class devices, this mostly just provides more accurate timestamp information. For cameras like Intel's RealSense line, provide a wider range of data about how the image was captured.
+
+Presumably this data was split out into a separate device node because it couldn't easily be delivered on the primary device node in a compatible way. It's a bit of a pain though, since (a) applications that don't care about this metadata now need to filter out the extra devices, and (b) applications that do care about the metadata need a way to tie the two devices together.
+
+_Reference: https://unix.stackexchange.com/questions/512759/multiple-dev-video-for-one-physical-device_
+
+**Check device capabilities**
+
+```bash
+v4l2-ctl --device=/dev/video0 --all
+# Driver Info:
+#         Driver name      : uvcvideo
+#         Card type        : Video Capture 2
+#         Bus info         : usb-0000:00:14.0-4.2
+#         Driver version   : 5.13.19
+#         Capabilities     : 0x84a00001
+#                 Video Capture
+#                 Metadata Capture
+#                 Streaming
+#                 Extended Pix Format
+#                 Device Capabilities
+#         Device Caps      : 0x04200001
+#                 Video Capture
+#                 Streaming
+#                 Extended Pix Format
+# Priority: 2
+# Video input : 0 (Camera 1: ok)
+# Format Video Capture:
+#         Width/Height      : 1920/1080
+#         Pixel Format      : 'YUYV' (YUYV 4:2:2)
+#         Field             : None
+#         Bytes per Line    : 3840
+#         Size Image        : 4147200
+#         Colorspace        : sRGB
+#         Transfer Function : Rec. 709
+#         YCbCr/HSV Encoding: ITU-R 601
+#         Quantization      : Default (maps to Limited Range)
+#         Flags             : 
+# Crop Capability Video Capture:
+#         Bounds      : Left 0, Top 0, Width 1920, Height 1080
+#         Default     : Left 0, Top 0, Width 1920, Height 1080
+#         Pixel Aspect: 1/1
+# Selection Video Capture: crop_default, Left 0, Top 0, Width 1920, Height 1080, Flags: 
+# Selection Video Capture: crop_bounds, Left 0, Top 0, Width 1920, Height 1080, Flags: 
+# Streaming Parameters Video Capture:
+#         Capabilities     : timeperframe
+#         Frames per second: 60.000 (60/1)
+#         Read buffers     : 0
+```
+
+This information can be handy when constructing the GStreamer pipeline.
+
+### 3. Test capture device
+
+**Check formats and sizes**
+
+```bash
+# modify for your deivce as needed
+v4l2-ctl --list-formats-ext --device /dev/video0
+# ioctl: VIDIOC_ENUM_FMT
+#         Type: Video Capture
+
+#         [0]: 'MJPG' (Motion-JPEG, compressed)
+#                 Size: Discrete 1920x1080
+#                         Interval: Discrete 0.017s (60.000 fps)
+#         [1]: 'YUYV' (YUYV 4:2:2)
+#                 Size: Discrete 1920x1080
+#                         Interval: Discrete 0.017s (60.000 fps)
+```
+
+Connect the capture device to a video source, _verify the output_, and grab a frame with:
+
+```bash
+# substitute your device name and height/width using above information
+v4l2-ctl --device /dev/video0 --set-fmt-video=width=1920,height=1080,pixelformat=MJPG --stream-mmap --stream-to=/tmp/output.jpg --stream-count=1
+
+# then check the file
+ls -l /tmp/output.jpg 
+# -rw-rw-r-- 1 scott scott 15336 Feb 14 11:01 /tmp/output.jpg
+```
+
+The captured frame, `output.jpg` is [Motion JPEG](https://en.wikipedia.org/wiki/Motion_JPEG) file and not readily viewable. There are several conversion utilities or other viewers, `ffmpeg` is one of the easiest and you might want it in general. Convert the output to a plain JPEG file with
+
+```bash
+ffmpeg -i /tmp/output.jpg -bsf:v mjpeg2jpeg frame.jpg
+```
+
+Open `frame.jpg` and verify the grab is valid.
+
+## Part 1 - v4l2 source to frame grab 
+
+GStreamer provides a flexible and effective means to acquire those sources and render the current frame. As [GStreamer](https://gstreamer.freedesktop.org/) can require a number of libraries and be a bit tricky to work with, using Docker helps to manage these dependencies.
+
+_Note:_ This section will build a Docker image. Docker images are specific to the OS and instruction architecture of the host. It can be convenient to build the image on one machine and deploy it to multiple others. However, the OS and architecture needs to be consistent. To avoid any issues, these instructions will build the image on the same system as the target for deployment. Advanced users can adapt this sequence to their needs.
 
 _Prerequisites_:
 
 * [Install Docker](https://docs.docker.com/engine/install/)
-* A working installation of [AWS IoT Greengrass v2](https://docs.aws.amazon.com/greengrass/index.html)
-* an AWS Account, If you don't have one, see [Set up an AWS account](https://docs.aws.amazon.com/greengrass/v2/developerguide/setting-up.html#set-up-aws-account)
-* AWS CLI v2 [installed](https://docs.aws.amazon.com/cli/latest/userguide/install-cliv2.html) and [configured](https://docs.aws.amazon.com/cli/latest/userguide/cli-chap-configure.html) with permissions to
-    - PUT objects into S3
+
 
 ### Build the Docker image
 
@@ -145,23 +310,27 @@ _Troubleshooting_
 
 Try executing the GStreamer pipeline interactively.
 
+**NOTE** the mapping of the `dev` tree and rule to map all the video (device type `81`) devices to the container.
+
 ```bash
 mkdir -p /tmp/data
-# launch the container in interactive mode
-docker run -v /tmp/data:/data -it --entrypoint /bin/bash gst
+# launch the container in interactive mode 
+docker run -v /tmp/data:/data  -v /dev:/dev --device-cgroup-rule='c 81:* rmw' -it --entrypoint /bin/bash gst
 ```
 
-_(Errors about not having a name are normal.)_
+Retry the previous host verification steps to ensure the guest container can access the device and that results are consistent. Note that the host's `/tmp/data` directory is mounted in the container at `/data` to interchange frame grabs or other files as needed.
+
+```bash
+cd /data
+
+v4l2-ctl --device /dev/video0 --set-fmt-video=width=1920,height=1080,pixelformat=MJPG --stream-mmap --stream-to=/tmp/output.jpg --stream-count=30 && ffmpeg -i /tmp/output.jpg -bsf:v mjpeg2jpeg frame%03d.jpg
+```
 
 Execute pipelines manually
 
 ```bash
-# extract current frame from a stream until Ctrl-C cancels 
-gst-launch-1.0 rtspsrc location="rtsp://<ip>:<port>/h264?username=<user>&password=<pass>" ! queue ! rtph264depay ! avdec_h264 ! jpegenc ! multifilesink location="/data/frame.jpg"
-
-# capture the stream to a file until Ctrl-C cancels 
-gst-launch-1.0 rtspsrc location="rtsp:/<ip>:<port>/h264?username=admin&password=123456" ! queue ! rtph264depay ! h264parse ! mp4mux ! filesink location=/data/file.mp4
-# change the IP number as needed for your RTSP source
+# grab numbered frames from /dev/video (v4l2 source)
+gst-launch-1.0 -v v4l2src device=/dev/video0 ! jpegdec ! videoconvert ! jpegenc ! multifilesink location="/data/frame.%06d.jpg"
 ```
 
 Seeing errors about plugins missing or misconfigured?
