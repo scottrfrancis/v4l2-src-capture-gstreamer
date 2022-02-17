@@ -15,8 +15,8 @@
 # SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 FROM ubuntu:20.04
-ENV TZ=<your timezone, e.g. America/Los_Angeles>
-# ENV TZ=America/Los_Angeles
+# ENV TZ=<your timezone, e.g. America/Los_Angeles>
+ENV TZ=America/Los_Angeles
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
 #
@@ -90,4 +90,7 @@ ENTRYPOINT ["gst-launch-1.0"]
 # CMD ["multifilesrc", "location=/frames/seq_%06d.jpg", "index=1", "loop=true", "caps=\"image/jpg,framerate=\\(fraction\\)12/1\"", "!", "multifilesink", "location=\"/data/frame.jpg\""]
 
 # capture from v4l2 device (`/dev/video0`) to a numbered series of files - max 1000 and then get deleted. if the mounted fs is limited, space may run out faster
+# CMD [ "v4l2src",  "device=/dev/video0", "!", "jpegdec", "!", "videoconvert",  "!", "jpegenc",  "!",  "multifilesink",  "location=\"/data/frame%06d.jpg\" max-files=1000" ]
+
+# capture from v4l2 to mp4 file
 CMD [ "v4l2src",  "device=/dev/video0", "!", "jpegdec", "!", "videoconvert",  "!", "jpegenc",  "!",  "multifilesink",  "location=\"/data/frame%06d.jpg\" max-files=1000" ]

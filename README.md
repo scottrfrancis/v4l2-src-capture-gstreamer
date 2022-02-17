@@ -280,8 +280,14 @@ Images can be inspected from the host (in `/tmp/data`) with any image viewer suc
 3. Execute pipelines manually
 
 ```bash
-# grab numbered frames from /dev/video (v4l2 source)
+# grab frames from /dev/video (v4l2 source)
 gst-launch-1.0 -v v4l2src device=/dev/video0 ! jpegdec ! videoconvert ! jpegenc ! multifilesink location="/data/frame.jpg"
+
+# capture 1 min (60s * 60fps) to mp4 file
+gst-launch-1.0 v4l2src num-buffers=3600 ! queue ! jpegdec ! videoconvert ! x264enc ! mp4mux ! filesink location=/data/video.mp4
+# NB- must specify `num-buffers` to terminate stream properly
+
+#    kvssink stream-name=$STREAM_NAME storage-size=512 \
 ```
 
 This will repeatedly acquire a frame from the device and write/overwrite the output file.
