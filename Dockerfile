@@ -52,6 +52,16 @@ WORKDIR /usr/src/amazon-kinesis-video-streams-producer-sdk-cpp/build
 RUN cmake .. -DBUILD_GSTREAMER_PLUGIN=TRUE
 RUN make
 
+# 
+# build the KVS WebRTC plugin for GStreamer
+#
+WORKDIR /usr/src
+RUN git clone --recursive https://github.com/awslabs/amazon-kinesis-video-streams-webrtc-sdk-c.git
+RUN mkdir -p /usr/src/amazon-kinesis-video-streams-webrtc-sdk-c/build
+WORKDIR /usr/src/amazon-kinesis-video-streams-webrtc-sdk-c/build
+RUN cmake ..
+
+
 #
 # Main entry to run a GStreamer pipeline
 #
